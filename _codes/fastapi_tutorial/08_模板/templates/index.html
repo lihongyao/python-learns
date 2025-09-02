@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Jinja2Templates</title>
+  </head>
+  <body>
+    <p>用户名：{{ username }}</p>
+    <p>年龄：{{ age }}</p>
+    <p>四大名著：{{ books }}</p>
+    <div>
+      <p>四大名著：</p>
+      <ol>
+        <li>{{ books.0 }}</li>
+        <li>{{ books.1 }}</li>
+        <li>{{ books.2 }}</li>
+        <li>{{ books.3 }}</li>
+      </ol>
+    </div>
+    <p>用户信息：{{ info.name }} - {{ info.age }} - {{ info.gender }}</p>
+  </body>
+</html>

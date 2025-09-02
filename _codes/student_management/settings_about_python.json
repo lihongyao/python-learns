@@ -1,0 +1,51 @@
+{
+  "isort.args": [
+    "-sp isort.cfg",
+    "--src=${workspaceFolder}",
+    "--line-length",
+    "160",
+    "--profile",
+    "black"
+  ],
+  "python.languageServer": "Jedi",
+  "[python]": {
+    "editor.tabSize": 4,
+    "editor.formatOnType": true,
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit"
+    }
+  },
+  "flake8.args": [
+    "line-length = 160",
+    "--max-line-length=160",
+    "--line-length = 160"
+  ],
+  "http.proxy": "http://127.0.0.1:7890",
+  "[yaml]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2,
+    "editor.autoIndent": "advanced",
+    "gitlens.codeLens.scopes": ["document"]
+  },
+  "[yml]": {
+    "editor.tabSize": 2,
+    "editor.detectIndentation": false
+  },
+  "[jinja-yaml]": {
+    "editor.tabSize": 2,
+    "editor.detectIndentation": false
+  }, 
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.cache": true,
+    "**/.DS_Store": true,
+    "**/.git": true,
+    "**/.hg": true,
+    "**/.mypy_cache": true,
+    "**/.svn": true,
+    "**/CVS": true,
+    "**/Thumbs.db": true
+  }
+}
