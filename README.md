@@ -52,10 +52,10 @@ $ conda config --set auto_activate_base false
 
 **步骤 1：创建虚拟环境**
 
-为每个项目创建独立环境（例如项目名为 `my_project`，Python 3.13.4）：
+为每个项目创建独立环境（例如项目名为 `my_project`，Python 3.14.4）：
 
 ```shell
-$ conda create -n my_project python=3.13.4
+$ conda create -n my_project python=3.14.4
 ```
 
 **步骤 2：激活环境**
@@ -102,7 +102,7 @@ $ conda deactivate
 示例：比如我们现在需要创建一个环境用于我们后续的学习，所以我可以创建一个 `learns` 的环境，操作如下：
 
 ```shell
-$ conda create -n learns python=3.13.3
+$ conda create -n learns python=3.14.4
 $ conda activate learns
 ```
 
