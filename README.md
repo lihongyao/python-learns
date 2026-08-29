@@ -1,258 +1,309 @@
 # 概述
-从零开始的Python学习之旅——记录代码成长与项目实践
 
-Python 是一门易于学习、功能强大的编程语言。它提供了高效的高级数据结构，还能简单有效地面向对象编程。Python 优雅的语法和动态类型以及解释型语言的本质，使它成为多数平台上写脚本和快速开发应用的理想语言。
+从零开始学习 Python，记录基础语法、核心编程、Web 开发、数据库和项目实践。
 
-1. [官方教程 ↪](https://docs.python.org/zh-cn/3/tutorial/index.html)
-2. [菜鸟教程 ↪](https://www.runoob.com/python3/python3-tutorial.html)
+本仓库以 Markdown 笔记为主，并配有可运行的 Python 示例。建议按“语法基础 → 核心编程 → 高级应用 → PostgreSQL”的顺序学习；遇到不熟悉的主题时，可以先阅读对应章节，再运行 `CODES/` 中的示例进行验证。
+
+参考资料：
+
+1. [Python 官方教程 ↪](https://docs.python.org/zh-cn/3/tutorial/index.html)
+2. [菜鸟教程：Python 3 教程 ↪](https://www.runoob.com/python3/python3-tutorial.html)
+3. [Python Playground ↪](https://python-playground.com/)
+
+# 学习路线
+
+- [语法基础](<001_语法基础/>)：数据类型、字符串、列表、字典、集合、函数、异常和模块。
+- [核心编程](<002_核心编程/>)：面向对象、文件操作、正则表达式、线程、进程、协程、插件和定时任务。
+- [高级应用](<003_高级应用/>)：Python 项目管理（Poetry、uv）、FastAPI、SQLAlchemy、项目实战、Docker 和 Containerd。
+- [PostgreSQL](<004_PostgreSQL/>)：数据库基础、数据类型、用户、表、模式、数据操作和高级用法。
+- [代码示例](<CODES/>)：基础语法、FastAPI 教程和学生管理系统等示例代码。
+
+# 仓库结构
+
+```text
+001_语法基础/       Python 基础语法笔记
+002_核心编程/       Python 核心编程笔记
+003_高级应用/       Web 开发、ORM、容器和项目实践
+004_PostgreSQL/    PostgreSQL 学习笔记
+CODES/             配套 Python 示例代码
+xminds/            思维导图文件
+imgs/              文档配图
+```
+
+# 快速开始
+
+1. 克隆仓库并进入目录：
+
+   ```shell
+   git clone https://github.com/lihongyao/python-learns.git
+   cd python-learns
+   ```
+
+2. 选择一种环境管理方式，创建并激活独立环境。Conda 和 `venv + pip` 的示例见下文。
+
+3. 从 [学习路线](#学习路线) 选择章节，或直接运行基础示例：
+
+   ```shell
+   python -c "print('Python 环境已就绪')"
+   python CODES/basic/01_基础语法.py
+   ```
+
+   第一条命令用于确认解释器可用。基础示例主要演示语法表达式，脚本没有额外的输出。如果使用了虚拟环境，请先激活环境。Windows 如果 `python` 命令不可用，可以尝试 `py`；macOS/Linux 如果未配置 `python`，可以将命令中的 `python` 替换为 `python3`。
 
 # 虚拟环境
 
-在 Python 开发中，我们常常会面临这样的问题：不同项目可能依赖于同一库的不同版本，或者某些项目需要特定的 Python 解释器版本。如果将所有的包都安装在全局环境中，可能会导致版本冲突，影响项目的正常运行。为了解决这些问题，Python 引入了虚拟环境的概念，而 Conda 则是一个功能强大的包和环境管理工具，能帮助我们更方便地创建和管理虚拟环境。
+虚拟环境用于隔离项目的 Python 解释器和依赖包，避免不同项目之间发生版本冲突。
 
-虚拟环境是 Python 提供的一种将项目的依赖项隔离开来的机制。它可以创建一个独立的 Python 环境，每个环境都有自己独立的 Python 解释器 和安装的包，互不干扰。这样，我们就可以在不同的虚拟环境中为不同的项目安装所需的特定版本的库，避免了全局环境中版本冲突的问题。
+虚拟环境本身不负责“打包”依赖；跨机器复现环境时，应提交 `environment.yml` 或 `requirements.txt` 等依赖清单。
 
-为什么需要虚拟环境？
+常见选择如下：
 
-- 避免版本冲突：不同项目可能依赖于同一库的不同版本，使用虚拟环境可以为每个项目提供独立的库版本。
-- 方便项目迁移：虚拟环境可以将项目的依赖项打包，方便在不同的机器上部署项目。
-- 保持全局环境整洁：只在全局环境中安装必要的工具，将项目的依赖项安装在虚拟环境中，使全局环境更加简洁。
+- **Conda**：适合需要管理多个 Python 版本、科学计算库或非 Python 系统依赖的项目。
+- **venv + pip**：Python 内置方案，适合大多数轻量项目。
+- **Poetry 或 uv**：适合希望统一管理项目元数据、锁定依赖版本的项目。本仓库的指南见 [第 01 章：Python 项目与依赖管理（Poetry 与 uv）](<003_高级应用/第01章 Python 项目与依赖管理.md>)。
+
+## venv + pip
+
+`venv` 随 Python 一起提供，不需要额外安装环境管理器。在仓库根目录执行：
+
+```shell
+python -m venv .venv
+```
+
+建议将 `.venv/` 加入项目的 `.gitignore`，不要把本地虚拟环境提交到版本库。
+
+激活环境：
+
+```shell
+# macOS/Linux
+source .venv/bin/activate
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+
+# Windows CMD
+.venv\Scripts\activate.bat
+```
+
+激活后使用 `python -m pip` 安装依赖；如果当前项目提供 `requirements.txt`，可以执行：
+
+```shell
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+deactivate
+```
+
+如果项目没有 `requirements.txt`，可以只安装当前示例需要的包，例如：
+
+```shell
+python -m pip install fastapi uvicorn
+```
 
 # Conda
 
-Conda 是一个开源的包和环境管理系统，可在 Windows、macOS 和 Linux 上运行。它不仅可以管理 Python 包，还可以管理其他语言的包，如 R、Java 等。Conda 可以创建、保存、加载和切换不同的虚拟环境，并且可以快速安装、更新和卸载包。
-
-推荐使用 [Miniconda ↪](https://www.anaconda.com/docs/getting-started/miniconda/install) 搭建 Python 环境和依赖隔离。
-
-> **提示**：conda 类似于 nvm 管理 nodeJS *（推荐，便于多版本管理和升级）*
+[Conda](https://docs.conda.io/) 是跨平台的环境和包管理工具，可以管理 Python 以及部分非 Python 依赖。推荐使用 [Miniconda](https://www.anaconda.com/docs/getting-started/miniconda/install)，它比完整 Anaconda 更轻量。
 
 ## 安装
 
-因为我的系统是 macOS，所以直接使用 HomeBrew 安装 miniconda，来管理 Python。
-
-```bash
-# 安装 miniconda
-$ brew install --cask miniconda
-
-# 初始化 conda，将 Conda 添加到终端环境变量（建议重启终端）
-$ conda init --all
-
-# 验证安装， 检查 Conda 版本
-$ conda --version
-
-# 配置镜像
-$ conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/
-$ conda config --set show_channel_urls yes
-
-# 禁用自动激活
-$ conda config --set auto_activate_base false
-```
-
-## 依赖隔离：创建项目环境
-
-**步骤 1：创建虚拟环境**
-
-为每个项目创建独立环境（例如项目名为 `my_project`，Python 3.14.4）：
+macOS 使用 Homebrew 时，可以执行：
 
 ```shell
-$ conda create -n my_project python=3.14.4
+brew install --cask miniconda
+conda init zsh
+exec zsh
+conda --version
 ```
 
-**步骤 2：激活环境**
+Windows 和 Linux 请按照 [Miniconda 安装文档](https://www.anaconda.com/docs/getting-started/miniconda/install) 选择对应安装包。`conda init` 只需要初始化正在使用的 Shell；例如 Bash 使用 `conda init bash`，PowerShell 使用 `conda init powershell`。
+
+国内网络环境下可以按需配置镜像。镜像地址可能会变化，使用前请以镜像站说明为准：
 
 ```shell
-$ conda activate my_project
+conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/
+conda config --set show_channel_urls yes
 ```
 
-激活后，终端提示符会显示环境名，如 `(my_project)`。
-
-**步骤 3：安装项目依赖**
-
-在激活的环境中安装包（例如 `numpy`）：
-
-```python
-$ conda install numpy  # 或使用 pip install numpy
-```
-
-**步骤 4：退出环境**
+如果不希望打开终端时自动进入 `base` 环境，可以执行：
 
 ```shell
-$ conda deactivate
+conda config --set auto_activate_base false
 ```
 
-## 新项目标准流程
+## 创建项目环境
 
-在每次创建项目之前，我们都应该为项目创建一个独立的环境，如果在全局环境下，会导致依赖冲突等问题，就好比前端通过 npm 全局安装依赖，然而各个项目对依赖版本有所差异，前端可以在项目本地安装，可以很方便的解决依赖隔离的问题，在 Python 中，我们可以通过 conda 来创建环境。比
-
-1. **创建环境**：`conda create -n 项目名 python=版本号`
-
-2. **激活环境**：`conda activate 项目名`
-
-3. **安装依赖**：`conda install 包名` 或 `pip install 包名`
-
-4. **导出依赖**（可选）：
-
-   ```shell
-   $ conda env export > environment.yml  # Conda 方式
-   $ pip freeze > requirements.txt      # Pip 方式
-   ```
-
-5. **退出环境**：`conda deactivate`
-
-示例：比如我们现在需要创建一个环境用于我们后续的学习，所以我可以创建一个 `learns` 的环境，操作如下：
+示例使用 Python 3.14.7；实际项目可以根据依赖兼容性选择其他版本：
 
 ```shell
-$ conda create -n learns python=3.14.4
-$ conda activate learns
+conda create -n learns python=3.14.7
+conda activate learns
+python --version
 ```
 
-## 其他实用指令
+在已激活的环境中安装依赖时，优先使用 Conda 能提供的包；需要从 PyPI 安装时，使用当前环境对应的解释器：
 
-- **查看所有环境**：`conda env list`
+```shell
+conda install numpy
+python -m pip install 包名
+```
 
-- **删除环境**：`conda remove -n 环境名 --all -y`
+退出环境：
 
-- **批量删除**
+```shell
+conda deactivate
+```
 
-  ```shell
-  $ for env in <env1> <env2> <env3> ...; do conda remove -n $env --all -y; done
-  ```
+## 导出和恢复环境
 
-## 注意事项
+跨平台分享时，建议只导出明确安装过的依赖：
 
-1. **优先使用 Conda 安装包**：减少依赖冲突（尤其是科学计算库如 `numpy`）。
-2. **避免在 `base` 环境安装包**：保持干净的系统环境。
-3. 每次打开终端时，记得先激活环境。
+```shell
+conda export --from-history --format=environment-yaml --file environment.yml
+```
+
+在另一台机器上创建环境：
+
+```shell
+conda env create --file environment.yml
+conda activate learns
+```
+
+如果需要精确复现当前平台的完整解析结果，也可以使用传统命令：
+
+```shell
+conda env export --file environment.yml
+```
+
+## 常用命令
+
+```shell
+# 查看所有环境
+conda env list
+
+# 删除环境
+conda remove --name 环境名 --all --yes
+
+# 更新指定环境中的全部包
+conda update --name 环境名 --all
+```
+
+不建议把项目依赖安装到 `base` 环境。进入项目目录后，再按项目需要激活对应环境即可，不必每次打开终端都激活同一个环境。
 
 # pip
 
-`pip` 是 Python 的官方包管理工具，全称为 **"Pip Installs Packages"**，用于安装、升级、卸载和管理 Python 第三方库。它直接与 Python Package Index (PyPI) 集成，PyPI 是 Python 社区的公共包仓库，包含数十万个开源库。
+`pip` 是 Python 的包安装器，通常从 [Python Package Index（PyPI）](https://pypi.org/) 获取和安装第三方包。
 
-**（1）基础指令**
+建议始终使用 `python -m pip`，这样可以确保 pip 与当前 Python 解释器对应。
+
+## 基础命令
 
 ```shell
 # 查看 pip 版本及路径
-$ pip --version
-# 安装包（默认最新版）
-$ pip install 包名
+python -m pip --version
+
+# 安装包
+python -m pip install 包名
+
 # 安装指定版本
-$ pip install 包名==版本号
+python -m pip install 包名==版本号
+
 # 升级包
-$ pip install --upgrade 包名
+python -m pip install --upgrade 包名
+
 # 卸载包
-$ pip uninstall 包名
+python -m pip uninstall 包名
+
 # 列出已安装的包
-$ pip list
+python -m pip list
+
 # 查看包详细信息
-$ pip show 包名
+python -m pip show 包名
 ```
 
-**（2）批量管理**
+## 依赖文件
+
+导出当前环境中的包，并在另一台机器上安装：
 
 ```shell
-# 导出依赖列表到文件
-$ pip freeze > requirements.txt
-# 从文件安装依赖
-$ pip install -r requirements.txt
+python -m pip freeze > requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-**（3）配置与维护**
+`pip freeze` 会记录当前环境中的所有已安装包，适合复现已有环境。新项目也可以手动维护只包含直接依赖的 `requirements.txt`，并在需要时使用锁定工具生成完整依赖集合。
+
+## 配置与维护
 
 ```shell
 # 升级 pip 自身
-$ python -m pip install --upgrade pip
-# 临时使用国内镜像源（如清华源）
-$ pip install 包名 -i https://pypi.tuna.tsinghua.edu.cn/simple
-# 永久配置镜像源
-$ pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
-```
+python -m pip install --upgrade pip
 
-**（4）其他实用指令**
+# 临时使用镜像源
+python -m pip install 包名 --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
-```shell
-# 检查依赖冲突
-$ pip check
+# 永久配置镜像源（会影响当前用户的所有 pip 命令）
+python -m pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
+
+# 检查依赖是否存在冲突
+python -m pip check
+
 # 清理缓存
-$ pip cache purge
-# 获取帮助
-$ pip help
+python -m pip cache purge
 ```
 
 # IDE
 
-## VSCode
+## VS Code
 
-1. 推荐使用 [VS Code](https://code.visualstudio.com/download)
-2. 插件安装，打开 VS Code，快捷键 <kbd>Command</kbd> + <kbd>Shift</kbd> + <kbd>X</kbd> 打开扩展商店，搜索框搜索插件并安装，推荐插件如下：
-   - [**Python (Microsoft)**](https://marketplace.visualstudio.com/items/?itemName=ms-python.python)：官方扩展
-   - **[Pylance](https://marketplace.visualstudio.com/items/?itemName=ms-python.vscode-pylance)**：Python 语言服务器
-   - [**Flake8**](https://marketplace.visualstudio.com/items?itemName=ms-python.flake8)：Python代码静态检查工具，用于检测代码风格错误（PEP 8规范）、语法错误和逻辑问题。
-   - [**Black Formatter**](https://marketplace.visualstudio.com/items?itemName=ms-python.black-formatter)：Python代码格式化工具，自动将代码转换为符合PEP 8风格的统一格式（如缩进、引号、行长度等），支持自定义配置。
-   - [**isort**](https://marketplace.visualstudio.com/items?itemName=ms-python.isort)：自动对Python的`import`语句按标准库/第三方库/本地模块分组并排序，提升代码可读性。
-   - [**mypy**](https://marketplace.visualstudio.com/items?itemName=ms-python.mypy-type-checker)：Python静态类型检查器，通过类型注解在编码阶段发现潜在类型错误，支持泛型、联合类型等高级特性。
-   - [**Path Intellisense**](https://marketplace.visualstudio.com/items?itemName=christian-kohler.path-intellisense)：文件路径自动补全插件，输入路径时智能提示目录和文件名，支持别名映射和忽略规则配置
-   - [**Python Environment Manager**](https://marketplace.visualstudio.com/items?itemName=donjayamanne.python-environment-manager)：管理Python虚拟环境和解释器，快速切换不同项目的依赖环境
-   - [**SQL Beautify**](https://marketplace.visualstudio.com/items?itemName=clarkyu.vscode-sql-beautify)：SQL/HQL代码格式化工具，一键整理杂乱SQL语句（如对齐关键字、标准化缩进），支持DDL和INSERT语句优化。
+推荐安装 [VS Code](https://code.visualstudio.com/download) 以及以下扩展：
 
-### 配置 Python 解释器
+- [Python](https://marketplace.visualstudio.com/items/?itemName=ms-python.python)：运行、调试和管理 Python 项目。
+- [Pylance](https://marketplace.visualstudio.com/items/?itemName=ms-python.vscode-pylance)：代码补全、类型分析和跳转。
+- [Black Formatter](https://marketplace.visualstudio.com/items?itemName=ms-python.black-formatter)：代码格式化。
 
-1. 在 VSCode 中使用快捷键 <kbd>Command</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd> 打开命令面板
-2. 输入 Python: Select Interpreter
-3. 选择当前项目所需的环境即可，比如刚刚创建的 `learns`
+按需选择一个代码质量工具即可，例如 [Ruff](https://marketplace.visualstudio.com/items?itemName=charliermarsh.ruff) 或 [Flake8](https://marketplace.visualstudio.com/items?itemName=ms-python.flake8)。需要类型检查时再安装 [mypy](https://marketplace.visualstudio.com/items?itemName=ms-python.mypy-type-checker)；`isort`、Path Intellisense 和 SQL Beautify 等扩展可按个人工作流安装。
 
-> **再次强调**：你应该为你的项目单独创建环境进行依赖隔离。
+### 选择 Python 解释器
 
-### 配置代码格式化
+1. 使用 <kbd>Command</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd>（Windows/Linux 使用 <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd>）打开命令面板。
+2. 执行 `Python: Select Interpreter`。
+3. 选择当前项目的 Conda 环境或 `.venv` 环境。
 
-1. VSCode 安装扩展：[**Black Formatter**](https://marketplace.visualstudio.com/items?itemName=ms-python.black-formatter)
+### 配置格式化
 
-2. 安装 black
+安装 Black Formatter 后，在 Python 文件中执行“Format Document With...” → “Configure Default Formatter...”并选择 Black Formatter。也可以在 VS Code 的 `settings.json` 中配置：
 
-   ```shell
-   $ pip install black
-   ```
+```json
+{
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.formatOnSave": true
+  }
+}
+```
 
-   > 提示：`pip` 是 Python 的官方包管理工具
-
-3. 配置 VSCode settings
-
-   - 快捷键：<kbd>Command</kbd> + <kbd>,</kbd>
-   - 搜索：python formatting provider
-   - 选择 Black Formatter 作为 Python 作为格式化工具
+Black Formatter 扩展通常自带格式化程序；只有在项目明确要求使用特定版本时，才需要在当前环境中单独安装 `black`。
 
 ## PyCharm
 
-参考 [入门指南 ↪](https://www.jetbrains.com/zh-cn/help/pycharm/installation-guide.html)
-
-- [学习键盘快捷键 ↪](https://www.jetbrains.com/zh-cn/help/pycharm/mastering-keyboard-shortcuts.html)
-
-- 插件
-  - **Fitten Code**
+可以参考 [PyCharm 安装指南](https://www.jetbrains.com/zh-cn/help/pycharm/installation-guide.html) 和 [键盘快捷键指南](https://www.jetbrains.com/zh-cn/help/pycharm/mastering-keyboard-shortcuts.html)。创建项目时选择已有的 Conda 环境或项目内 `.venv`，并按需安装代码检查、格式化等插件。
 
 # 初体验
 
+以下命令在仓库根目录执行，创建一个最小示例并运行它：
+
 ```shell
-# 创建项目
-$ cd Desktop && mkdir -p examples && touch examples/main.py
-# 填充代码
-$ echo "print('Hello World')" > examples/main.py 
-# 在编辑器中打开项目
-$ code ./examples
+mkdir -p examples
+printf "print('Hello, World!')\n" > examples/main.py
+python examples/main.py
 ```
 
-运行：
+如果希望使用 VS Code 打开示例目录：
 
-- **方法一**：右键文件 → **“在终端运行 Python 文件”**（需提前安装 Python 解释器）
+```shell
+code examples
+```
 
-- **方法二**：打开终端（<kbd>Ctr</kbd> + <kbd>`</kbd>）→ 输入命令：
+也可以在编辑器中打开 `examples/main.py`，使用右上角的运行按钮或运行和调试面板执行文件。
 
-  ```bash
-  $ python hello_word.py 
-  ```
+使用集成终端时，可通过 <kbd>Ctrl</kbd> + <kbd>\`</kbd> 打开终端。
 
-- **方法三**：在编辑器右上角，有一个  ▶ 按钮，有两种选择：
-  - 运行 Python 文件
-  - Python 调试程序：调试 Python 文件
-
-
-
+macOS 也可以使用 <kbd>Control</kbd> + <kbd>`</kbd>。
