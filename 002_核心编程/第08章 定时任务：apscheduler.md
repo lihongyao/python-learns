@@ -2,120 +2,89 @@
 
 ## 简介
 
-APScheduler（Advanced Python Scheduler）是一个用于调度 Python 任务的第三方库，可以按指定时间执行一次任务，也可以按固定间隔或日历规则重复执行任务。
+APScheduler（Advanced Python Scheduler）是在进程内按时间规则调度 Python callable 的库，支持一次性、间隔和日历（cron）触发。
+
+它负责计算执行时间并提交任务，不是分布式任务队列，也不会自动保证多进程部署中只执行一次。
 
 ## 版本说明
 
-本章示例使用 APScheduler 3.x 的 API（`BackgroundScheduler`、`add_job()`）。安装时固定在 4.x 之前：
+本章采用 APScheduler **3.11.3** 的稳定版 API：
 
 ```shell
-pip install "APScheduler<4"
+python -m pip install "APScheduler==3.11.3"
 ```
 
-APScheduler 4.x 对调度器和任务 API 做了较大调整，升级时应参考官方迁移文档，不要直接混用两个版本的写法。
+APScheduler 4.x 正在进行重大 API 重写，使用 `Scheduler`、`AsyncScheduler`、`add_schedule()` 等新概念；不要把 3.x 和 4.x 示例混用。升级时按官方迁移文档逐项调整。
 
 # 基本用法
 
-## 定义任务函数
-
-任务函数就是调度器到达触发时间后执行的普通 Python 函数：
-
-```python
-from datetime import datetime
-
-
-def job():
-    print(f"任务执行时间：{datetime.now()}")
-```
-
-任务函数应尽量短小，并妥善处理异常。长时间运行的任务会占用执行器中的工作线程。
-
 ## 创建和启动调度器
 
-`BackgroundScheduler` 在独立线程中运行，调用 `start()` 后会立即返回，不会阻塞主线程：
-
 ```python
 from datetime import datetime
-import time
+from time import sleep
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
 
 def job():
-    print(f"任务执行时间：{datetime.now()}")
+    print(f"任务执行：{datetime.now():%H:%M:%S}")
 
 
 if __name__ == "__main__":
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
-    scheduler.add_job(
-        job,
-        trigger="interval",
-        seconds=5,
-        id="print-time",
-    )
+    scheduler.add_job(job, "interval", seconds=5, id="print-time")
     scheduler.start()
-    print("调度器已启动，按 Ctrl+C 退出")
-
     try:
         while True:
-            time.sleep(1)
+            sleep(1)
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown(wait=True)
 ```
 
-`BackgroundScheduler` 不会替主程序阻止退出；如果主线程很快执行完毕，任务可能还没有机会运行。因此，独立脚本需要保持主线程运行，或改用 `BlockingScheduler`。
+- `BackgroundScheduler.start()` 启动后台线程并立即返回；主程序结束时调度器也会停止。
+- `BlockingScheduler.start()` 占用当前线程，适合独立脚本。
+- `AsyncIOScheduler` 与 `asyncio` 事件循环集成；异步任务需确认库版本和执行器行为。
+- 调度器启动后不能再修改其核心配置；程序结束时调用 `shutdown()`。
 
-## 调度器类型
-
-APScheduler 3.x 常用的调度器有：
-
-| 调度器 | 特点 | 适用场景 |
-| --- | --- | --- |
-| `BackgroundScheduler` | 在后台线程运行，`start()` 不阻塞 | Web 应用或已有主循环的程序 |
-| `BlockingScheduler` | 在当前线程运行，`start()` 会阻塞 | 独立的定时任务脚本 |
-| `AsyncIOScheduler` | 与 `asyncio` 事件循环集成 | 异步应用 |
-
-调度器一旦启动，就不应再修改其核心配置。程序结束时应调用 `shutdown()` 释放执行器和作业存储器。
+时区优先使用标准库 `zoneinfo` 支持的名称。时间规则涉及夏令时，应明确时区并测试重复或不存在的本地时间。
 
 # 任务和触发器
 
 ## `add_job()`
 
-使用 `add_job()` 将任务加入调度器：
-
 ```python
 scheduler.add_job(
-    func,                 # 任务函数
-    trigger="interval",   # 触发器类型
+    func,
+    trigger="interval",
     seconds=10,
     id="unique-job-id",
     args=(1,),
     kwargs={"enabled": True},
+    max_instances=1,
+    coalesce=True,
+    misfire_grace_time=30,
 )
 ```
 
 常用参数：
 
-- `func`：要执行的函数，不能依赖无法导入的局部函数或匿名函数。
-- `trigger`：触发器类型，可以是 `date`、`interval` 或 `cron`。
-- `id`：任务标识，使用持久化作业存储器时应明确指定。
-- `args`、`kwargs`：传给任务函数的位置参数和关键字参数。
-- `start_date`、`end_date`：任务开始和结束时间。
-- `max_instances`：同一任务允许同时运行的最大实例数。
-- `misfire_grace_time`：任务错过计划时间后允许延迟执行的秒数。
-- `coalesce`：多次错过执行时间时，是否合并为一次执行。
+- `func`：任务 callable；持久化作业或进程池执行时应可被导入和序列化。
+- `trigger`：`date`、`interval`、`cron`，也可以传入触发器对象。
+- `id`：任务标识；初始化持久化作业时应显式指定。
+- `args`、`kwargs`：传给任务函数的参数。
+- `start_date`、`end_date`：开始、结束时间。
+- `max_instances`：同一任务允许同时执行的最大实例数，默认通常为 1。
+- `misfire_grace_time`：错过计划时间后仍允许执行的最大延迟。
+- `coalesce`：多次错过时是否合并为一次执行。
+- `next_run_time=None`：先以暂停状态创建任务。
 
-`add_job()` 返回一个 `Job` 对象，可以保存该对象后进行修改或删除。
+默认添加到内存作业存储器；任务不会跨进程共享，也不会在进程重启后保留。
 
-## 三种内置触发器
-
-### `date`
-
-只执行一次。如果不指定 `run_date`，通常表示尽快执行：
+## 一次性触发 `date`
 
 ```python
 from datetime import datetime, timedelta
-
 
 scheduler.add_job(
     job,
@@ -124,100 +93,173 @@ scheduler.add_job(
 )
 ```
 
-### `interval`
+省略 `run_date` 通常表示尽快执行。一次性任务完成后会从调度器中移除。
 
-按照固定时间间隔重复执行：
+## 间隔触发 `interval`
 
 ```python
 scheduler.add_job(job, "interval", minutes=10)
 ```
 
-也可以使用 `seconds`、`hours`、`days` 等参数。
+可使用 `seconds`、`minutes`、`hours`、`days`、`weeks` 等参数。间隔任务不会因为设置了 10 分钟就保证每次精确在整点执行，实际时间还会受调度器唤醒、执行器容量和系统负载影响。
 
-### `cron`
-
-按照日历规则执行，适合“每天某时刻”或“每周某天”等场景：
+## 日历触发 `cron`
 
 ```python
 scheduler.add_job(
     job,
-    trigger="cron",
+    "cron",
     day_of_week="mon-fri",
     hour=12,
     minute=0,
 )
 ```
 
-`cron` 的时间字段可以使用数字、范围和通配符，例如 `minute="*/5"` 表示每 5 分钟一次。
+适合“工作日 12:00”“每月某日”等规则。建议使用 `mon`、`fri` 等名称表达星期，避免不同版本或系统对数字星期的误解。
 
-# 四大组件
+# 四类组件
 
-APScheduler 由四类组件协作完成任务调度：
-
-1. 触发器（Trigger）：计算任务下一次执行的时间。
-2. 作业存储器（Job store）：保存任务信息。默认的 `MemoryJobStore` 只保存在内存中，进程重启后任务会丢失。
-3. 执行器（Executor）：负责执行任务。默认使用线程池，也可以配置进程池。
-4. 调度器（Scheduler）：协调上述组件，提供添加、修改、暂停和删除任务的接口。
+1. **触发器（Trigger）**：计算下一次运行时间。
+2. **作业存储器（Job store）**：保存任务定义；内存存储器重启后丢失。
+3. **执行器（Executor）**：将任务提交到线程池或进程池。
+4. **调度器（Scheduler）**：协调触发器、作业存储器和执行器。
 
 ## 作业存储器
 
-不需要持久化时，使用默认的内存作业存储器即可。需要在程序重启后保留任务时，可以配置 SQLAlchemy、MongoDB 等持久化作业存储器。
+常用内置存储器：
 
-持久化作业存储器通常需要注意：
+- `MemoryJobStore`：默认，适合临时任务。
+- `SQLAlchemyJobStore` 等持久化存储器：适合重启后恢复任务。
 
-- 任务函数必须可以被正常导入，不能使用局部函数或 `lambda`。
-- 任务参数必须可以序列化。
-- 初始化时应指定稳定的 `id`，必要时使用 `replace_existing=True`，避免应用重启后重复添加同一个任务。
-- 一个作业存储器不应被多个调度器实例共享。
+持久化任务需要注意：
+
+- 任务函数通常必须是模块级、可导入的 callable。
+- 参数和相关对象必须可序列化。
+- 应指定稳定的 `id`，并在初始化时使用 `replace_existing=True`，避免每次重启重复添加。
+- 一个作业存储器不应被多个独立调度器实例共享。
 
 ## 执行器
 
-- `ThreadPoolExecutor`：默认执行器，适合大多数 I/O 密集型任务。
-- `ProcessPoolExecutor`：使用进程执行，适合 CPU 密集型任务，但任务函数和参数必须可序列化。
+- `ThreadPoolExecutor`：默认选择，适合 I/O 密集型任务。
+- `ProcessPoolExecutor`：适合 CPU 密集型任务，但函数和参数需可序列化。
 
-执行器中的工作线程或进程数量会限制任务的并发执行数量。任务执行时间过长时，应合理设置 `max_workers` 和 `max_instances`。
+执行器容量会影响任务延迟。任务运行时间超过触发间隔时，应结合 `max_instances`、`coalesce` 和任务幂等性设计。
 
 # 任务管理
 
-`add_job()` 返回的任务对象可以用于管理任务：
+`add_job()` 返回 `Job` 对象：
 
 ```python
-report = scheduler.add_job(report_job, "interval", minutes=10, id="report")
+job = scheduler.add_job(report_job, "interval", minutes=10, id="report")
 
-report.pause()    # 暂停任务
-report.resume()   # 恢复任务
-report.remove()   # 删除任务
+job.pause()
+job.resume()
+job.modify(name="daily report")
+job.reschedule("cron", hour=9, minute=0)
+job.remove()
 ```
 
-也可以通过调度器和任务 ID 操作：
+也可以按 ID 操作：
 
 ```python
 scheduler.pause_job("report")
 scheduler.resume_job("report")
+scheduler.modify_job("report", name="daily report")
+scheduler.reschedule_job("report", "cron", hour=9, minute=0)
 scheduler.remove_job("report")
 ```
 
-关闭调度器：
+调度器级别操作：
 
 ```python
+scheduler.pause()
+scheduler.resume()
+scheduler.print_jobs()
 scheduler.shutdown(wait=True)
 ```
 
-`wait=True` 表示等待正在执行的任务结束；使用 `wait=False` 时不会等待运行中的任务。
+`scheduler.pause()` 暂停处理所有任务；`job.pause()` 只暂停单个任务。`shutdown(wait=False)` 不等待正在运行的任务结束，但不会强制终止它们。
+
+# 执行结果和异常
+
+任务函数的返回值不会自动被 `add_job()` 调用方取得。执行结果和异常可通过监听器观察：
+
+```python
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
+
+
+def listener(event):
+    if event.exception:
+        print(f"任务失败：{event.job_id}")
+    else:
+        print(f"任务完成：{event.job_id}")
+
+
+scheduler.add_listener(listener, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
+```
+
+监听器只适合记录、指标和通知，不应把耗时业务逻辑直接放在其中。任务内部也应记录异常上下文；单个任务失败不会自动停止调度器。
+
+# 错过执行与任务重叠
+
+## misfire
+
+调度器关闭、机器暂停或执行器繁忙时，任务可能错过计划时间。`misfire_grace_time` 决定超时任务是否还允许补执行。
+
+## coalesce
+
+当同一任务错过多个执行点时：
+
+- `coalesce=True`：合并为一次执行。
+- `coalesce=False`：可能连续补执行多个实例。
+
+选择取决于任务语义：发送通知等通常不应重复，账务补偿等可能需要逐次处理。
+
+## 任务重叠
+
+`max_instances` 限制同一任务并发实例数。限制不是分布式锁；多个进程中的多个调度器仍可能各自执行一份任务。
+
+任务应尽量幂等，并在业务层设计唯一键、租约或分布式锁。多进程 Web 部署时通常单独运行一个调度器，或使用支持多节点协调的任务系统。
+
+# 配置示例
+
+```python
+from apscheduler.executors.pool import ProcessPoolExecutor, ThreadPoolExecutor
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from apscheduler.schedulers.background import BackgroundScheduler
+
+scheduler = BackgroundScheduler(
+    jobstores={
+        "default": SQLAlchemyJobStore(url="sqlite:///jobs.sqlite"),
+    },
+    executors={
+        "default": ThreadPoolExecutor(10),
+        "processpool": ProcessPoolExecutor(2),
+    },
+    job_defaults={
+        "coalesce": True,
+        "max_instances": 1,
+        "misfire_grace_time": 30,
+    },
+    timezone="Asia/Shanghai",
+)
+```
+
+配置持久化存储器时，应在调度器启动前完成，并保证数据库连接、任务序列化和部署拓扑符合要求。SQLite 适合简单单进程场景，不等于多节点调度协调方案。
 
 # 常见注意事项
 
-- `BackgroundScheduler.start()` 返回后，主程序仍需保持运行，否则调度器线程可能随进程退出。
-- 同一个任务可能因执行时间过长而与下一次计划重叠，应合理设置 `max_instances`。
-- 程序暂停或调度器关闭期间错过的任务可能触发 misfire，应根据任务性质设置 `misfire_grace_time` 和 `coalesce`。
-- 多进程 Web 部署时不要让每个工作进程都启动一份调度器，否则同一任务可能被执行多次；通常应单独运行调度器或确保只有一个实例负责调度。
-- 任务内部应记录日志并处理异常，避免单个任务失败后难以排查。
+- 先确认 APScheduler 主版本，再选择对应文档；不要混用 3.x 与 4.x API。
+- `BackgroundScheduler` 需要主程序保持运行；Web 应用的重载器和多工作进程可能启动多份调度器。
+- `max_instances`、`misfire_grace_time`、`coalesce` 解决不同问题，不能互相替代。
+- cron 任务要明确时区，并测试夏令时切换。
+- 持久化任务函数必须可导入、参数可序列化；不要直接使用局部函数、lambda 或打开的文件对象。
+- 调度器只负责调度，不能替代可靠消息队列、分布式锁或工作流系统。
+- 关闭程序时调用 `shutdown()`，并根据业务选择是否等待正在运行的任务。
 
-更多内容可参考：
+# 推荐阅读
 
-- [APScheduler 3.x 用户指南](https://apscheduler.readthedocs.io/en/3.x/userguide.html)
+- [APScheduler 3.11 用户指南](https://apscheduler.readthedocs.io/en/3.x/userguide.html)
 - [`BackgroundScheduler`](https://apscheduler.readthedocs.io/en/3.x/modules/schedulers/background.html)
-- [`date` 触发器](https://apscheduler.readthedocs.io/en/3.x/modules/triggers/date.html)
-- [`interval` 触发器](https://apscheduler.readthedocs.io/en/3.x/modules/triggers/interval.html)
-- [`cron` 触发器](https://apscheduler.readthedocs.io/en/3.x/modules/triggers/cron.html)
-- [APScheduler 迁移到 4.x](https://apscheduler.readthedocs.io/en/master/migration.html)
+- [`add_job()`](https://apscheduler.readthedocs.io/en/3.x/modules/schedulers/base.html#apscheduler.schedulers.base.BaseScheduler.add_job)
+- [APScheduler 3.x 到 4.x 迁移](https://apscheduler.readthedocs.io/en/master/migration.html)

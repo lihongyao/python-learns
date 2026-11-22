@@ -10,12 +10,12 @@ Pydantic 是一个基于 Python 类型提示来定义数据验证、序列化和
 
 Starlette 是一种轻量级的 ASGI 框架/工具包，负责处理 Web 请求和响应。
 
-> - [Starlette ↪](https://www.starlette.io/) 负责 Web 部分（asyncio）
+> - [Starlette ↪](https://starlette.dev/) 负责 Web 部分（asyncio）
 > - [Pydantic ↪](https://docs.pydantic.dev/latest/) 负责数据部分（类型提示）
 
 FastAPI 建立在 Starlette 和 Pydantic 之上，适合开发前后端分离的 API、自动化服务和微服务。
 
-> 本章示例基于 [Python 3.14.7 ↪](https://www.python.org/downloads/release/python-3147/)，使用 Python 3.10+ 语法。
+> 本章示例基于 [Python 3.15.2 ↪](https://www.python.org/downloads/release/python-3152/)，使用 Python 3.10+ 语法。
 
 > 参考：
 >
@@ -50,7 +50,7 @@ HTTP 协议是 Hyper Text Transfer Protocol（超文本传输协议）的缩写�
 
 ### HTTP 请求协议与响应协议
 
-![HTTP 请求与响应](../imgs/soket.jpg)
+![HTTP 请求与响应](../imgs/socket.png)
 
 HTTP 交互包含请求报文和响应报文。报文由起始行、请求头或响应头、空行以及可选的消息体组成。
 
@@ -134,6 +134,7 @@ macOS 推荐使用 Homebrew 安装 `uv`：
 ```shell
 $ brew install uv
 $ uv --version
+uv 0.13.9 (Homebrew 2026-11-17 aarch64-apple-darwin)
 ```
 
 如果尚未安装 Homebrew，可参考 [Homebrew 官方文档](https://brew.sh/zh-cn/)。也可以使用 `uv` 官方安装脚本：
@@ -156,8 +157,8 @@ $ uv init --bare
 指定项目使用的 Python 版本：
 
 ```shell
-$ uv python install 3.14.7
-$ uv python pin 3.14.7
+$ uv python install 3.15.2
+$ uv python pin 3.15.2
 ```
 
 > **提示**：
@@ -166,7 +167,7 @@ $ uv python pin 3.14.7
 >
 > `uv python pin` 会在当前项目记录版本。
 >
-> 若系统中已经有可用的 Python 3.14.7，也可以跳过第一条命令。
+> 若系统中已经有可用的 Python 3.15.2，也可以跳过第一条命令。
 
 安装依赖：
 
@@ -180,7 +181,7 @@ $ uv add "fastapi[standard]"
 
 ```shell
 $ uv run python --version
-Python 3.14.7
+Python 3.15.2
 ```
 
 `fastapi[standard]` 会安装运行开发服务器所需的常用依赖，其中包含 [FastAPI CLI ↪](https://fastapi.tiangolo.com/fastapi-cli/) 和 Uvicorn。生产环境也可以使用 [Uvicorn ↪](https://www.uvicorn.org/) 或 [Hypercorn ↪](https://github.com/pgjones/hypercorn)。
@@ -192,7 +193,11 @@ Python 3.14.7
 ```python
 from fastapi import FastAPI
 
-app = FastAPI()
+app = FastAPI(
+    title="示例 API",
+    description="用于学习 FastAPI 的接口示例",
+    version="1.0.0",
+)
 
 @app.get("/")
 async def home():
@@ -204,9 +209,18 @@ async def home():
 
 ```shell
 $ uv run fastapi dev
-INFO:     Will watch for changes in these directories: ...
-INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
-INFO:     Started reloader process [35811] using WatchFiles
+
+ ⚡️ Starting FastAPI in development mode
+ 
+ 🐍 Using import string: main:app (auto-discovered, use --verbose to learn more)
+ 
+ 💡 You can configure an entrypoint in pyproject.toml for this app with:
+ 
+    [tool.fastapi]
+    entrypoint = "main:app"
+ 
+ 🌐 Server started at http://127.0.0.1:8000
+    Documentation at http://127.0.0.1:8000/doc
 ```
 
 > 注意：`fastapi dev` 默认查找 `main.py`。如果文件名是 `index.py`，可以执行：`uv run fastapi dev index.py`。需要显式指定模块时，也可以使用 `uv run uvicorn index:app --reload`。
@@ -228,7 +242,7 @@ if __name__ == "__main__":
 5. 定义返回值
 6. 运行开发服务器，如：`uv run fastapi dev`
 
-此外，FastAPI 会自动生成交互式 API 文档。打开 [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) 即可查看。关于文档配置，可以参考 [元数据和文档配置 ↪](https://fastapi.tiangolo.com/zh/tutorial/metadata/)。
+此外，FastAPI 会自动生成交互式 API 文档。打开 [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) 即可查看。
 
 # 路径操作
 
@@ -384,16 +398,24 @@ router.include_router(works_router, prefix="/works", tags=["作品管理"])
 > **`app/main.py`**
 
 ```python
+from pathlib import Path
 from app.api.v1 import router as api_router
 from fastapi import FastAPI
 import uvicorn
+import sys
+
+# 兼容 IDE 或命令行直接执行 app/main.py。
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if __package__ in (None, ""):
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 app = FastAPI()
 
 app.include_router(api_router, prefix="/api/v1")
 
 if __name__ == "__main__":
-    uvicorn.run("app.main:app", port=8080, reload=True)
+    uvicorn.run("app.main:app", port=8000, reload=True, reload_dirs=[str(PROJECT_ROOT)])
+
 ```
 
 > 在项目根目录执行 `uv run uvicorn app.main:app --reload`，即可启动这个多文件应用。
