@@ -227,6 +227,26 @@ $ uv run fastapi dev
 
 > 注意：`fastapi dev` 默认查找 `main.py`。如果文件名是 `index.py`，可以执行：`uv run fastapi dev index.py`。需要显式指定模块时，也可以使用 `uv run uvicorn index:app --reload`。
 
+> 提示：如果你从 GitHub 下载了一个使用 uv + FastAPI 的 Python 项目，通常可以按照下面的步骤安装依赖并运行。
+>
+> 1）进入项目目录
+>
+> 2）先查看项目根目录是否有以下文件：
+>
+> - `pyproject.toml`
+> - `uv.lock`
+>
+> 如果有，直接执行：
+>
+> ```shell
+> $ uv sync
+> ```
+>
+> - 创建 `.venv` 虚拟环境（如果不存在）。
+> - 根据 `pyproject.toml` 安装项目依赖。
+> - 如果有 `uv.lock`，优先按照锁定版本安装。
+> - 安装项目本身。
+
 也可以直接运行：
 
 ```python
@@ -1662,6 +1682,11 @@ from enum import Enum, unique
 class E(Enum):
     """稳定的业务码与公开提示；HTTP 状态另在 API 层映射。"""
 
+    """
+    自定义错误码
+    格式: <业务>_<错误类型> = (code, msg)
+    """
+
     # 公共错误
     HTTP_ERROR = (10000, "请求失败")
     BAD_REQUEST = (10001, "请求不合法")
@@ -1683,10 +1708,12 @@ class E(Enum):
 
     @property
     def code(self) -> int:
+        """获取错误码"""
         return self.value[0]
 
     @property
     def msg(self) -> str:
+        """获取错误码码信息"""
         return self.value[1]
 ```
 
