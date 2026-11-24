@@ -1458,32 +1458,70 @@ if __name__ == "__main__":
 
 # 异常处理
 
-本节采用的约定：**统一错误响应格式，保留真实 HTTP 状态；业务异常表达失败原因，由 API 层决定如何响应；未知故障返回 500 并记录堆栈。**
+本节采用的约定：**成功与失败共用统一响应结构；普通业务失败返回 HTTP 200，客户端按 `code` 处理；只有网关、监控、重试需要感知的错误才使用真实 HTTP 状态；未预期异常返回 500 并记录堆栈。**
 
 ```mermaid
 sequenceDiagram
     participant Client
+    participant Middleware as RequestContextMiddleware
+    participant Handler as 异常处理器
     participant Route
     participant Service
-    participant Handler
-    Client->>Route: 发起请求
+    Client->>Middleware: 发起请求，生成 request_id
+    Middleware->>Handler: 继续向内传递
+    Handler->>Route: 路由匹配、参数校验
     Route->>Service: 调用业务逻辑
-    Service-->>Handler: 抛出业务异常
-    Handler-->>Client: HTTP 状态 + 业务码 + 请求标识
+    Service-->>Handler: 抛出 BizException
+    Handler-->>Middleware: HTTP 状态（由错误码决定） + 业务码
+    Middleware-->>Client: 补充 X-Request-ID 响应头
+    Note over Middleware: 未预期异常在此兜底，返回 500
 ```
 
 **异常分类速查**
 
-| 情况 | 处理方式 | HTTP 状态示例 |
+| 情况 | 处理方式 | HTTP 状态 |
 | --- | --- | --- |
-| 请求字段缺失、类型错误 | 直接处理 `RequestValidationError` | 422 |
-| 资源不存在、状态冲突等预期业务失败 | 抛出 `BizException`，集中映射状态 | 404、409 |
-| 未认证、无权限、路由不存在 | 处理 Starlette `HTTPException`，保留协议响应头 | 401、403、404 |
-| 程序缺陷、响应模型校验失败、未处理的数据库或外部服务故障 | 返回安全的通用错误，记录堆栈并告警 | 500；明确识别后可按语义使用 502、503、504 |
+| 资源不存在、状态冲突等预期业务失败 | 抛出 `BizException`，由错误码决定状态 | 200 |
+| 请求字段缺失、类型错误 | 处理 `RequestValidationError`，返回字段明细 | 422 |
+| 未认证、无权限、路由不存在、方法不允许 | 处理 Starlette `HTTPException`，保留原状态与响应头 | 401、403、404、405 |
+| 外部依赖（LLM 等）超时、不可用、限流 | 在集成层转换为 `BizException`，错误码自带 5xx 状态 | 502、503、504 |
+| 程序缺陷、响应模型校验失败、未识别的故障 | 由 `RequestContextMiddleware` 兜底，记录堆栈，返回通用提示 | 500 |
 
-- HTTP 状态用于描述请求结果，业务码用于描述具体原因，`msg` 用于展示。客户端按状态和业务码处理逻辑，不要匹配提示文案。
-- “查询是否有资格”正常返回“没有资格”，可以是 HTTP 200；“执行购买”因资格不足被拒绝，应按接口语义返回相应 4xx。预期内的失败并不自动等于请求成功。
+- 业务码用于描述具体原因，`msg` 用于展示。客户端只根据 `code` 判断：`code == 0` 表示成功，其余为约定的错误码；不要匹配提示文案。
+- HTTP 状态只保留给基础设施：401／403／429 便于网关处理，5xx 便于监控告警与客户端退避重试。普通业务失败若返回 4xx，会被网关、访问日志误当作异常请求。
 - 不在每个路由里重复 `try/except`。业务层抛出异常，API 边界统一生成响应；只有需要恢复、清理资源或转换已知异常时，才在局部捕获。
+
+**目录结构**
+
+```
+app/
+├── main.py                     # 应用入口：注册异常处理器与中间件
+├── api/v1/
+│   ├── __init__.py             # 汇总 v1 路由
+│   ├── users.py                # 路由中使用 BizException
+│   └── agent.py
+├── core/
+│   ├── context.py              # 请求上下文（request_id）
+│   ├── logger.py               # 日志配置，自动带上 request_id
+│   └── exceptions/
+│       ├── codes.py            # 错误码
+│       ├── errors.py           # 自定义异常类
+│       └── handlers.py         # 异常处理器
+├── integrations/
+│   └── openai_client.py        # 外部依赖异常转换
+├── middlewares/
+│   └── request_context.py      # request_id 与未预期异常兜底
+├── schemas/
+│   └── response.py             # 统一响应模型
+└── services/
+    └── agent.py
+```
+
+本节日志使用 Loguru，需先安装依赖：
+
+```shell
+$ uv add loguru
+```
 
 ## 创建自定义异常类
 
@@ -1492,70 +1530,156 @@ sequenceDiagram
 ```python
 from typing import Any
 
-from pydantic import BaseModel
-
 from app.core.exceptions.codes import E
 
 
-class ErrorModel(BaseModel):
-    code: int
-    msg: str
-    data: dict[str, Any] | None = None
-    request_id: str
-
-
 class BizException(Exception):
-    """预期业务失败；不负责选择 HTTP 状态或构造响应。"""
+    """
+    可预期的失败：业务规则不满足，或外部依赖（如 LLM）故障。
+
+    用法:
+        raise BizException(E.USER_NOT_FOUND, data={...})
+        raise BizException(E.LLM_TIMEOUT) from exc   # 保留原始异常，便于日志排查
+
+    HTTP 状态由错误码自身决定（普通业务失败为 200），调用处不选择状态、也不构造响应。
+    """
 
     def __init__(self, error_code: E, *, data: dict[str, Any] | None = None):
+        if error_code is E.SUCCESS:
+            raise ValueError("E.SUCCESS 不能作为异常抛出")
         self.error_code = error_code
         self.data = data
         super().__init__(error_code.msg)
 ```
 
-`BizException` 继承普通 `Exception`，不继承 `HTTPException`；调用处只传入业务码和允许公开的数据。同一套业务逻辑用于 HTTP 接口、任务或命令行时，可以由不同入口决定处理方式。
+`BizException` 继承普通 `Exception`，不继承 `HTTPException`；调用处只传入错误码和允许公开的数据，HTTP 状态由错误码自身决定。同一套业务逻辑用于 HTTP 接口、任务或命令行时，可以由不同入口决定处理方式。
 
 请求参数校验失败直接由 `RequestValidationError` 处理，不再包装成业务异常。输出模型校验失败、业务内部的 Pydantic 校验错误不能一律当作客户端参数错误。
 
 > `msg` 和 `data` 都属于对外契约，不要放入 SQL、连接串、密码、令牌或第三方服务的原始报错。
 
-##  创建自定义异常处理器
+## 定义统一响应模型
+
+> **`app/core/context.py`**
+
+```python
+from contextvars import ContextVar
+
+# 当前请求的 request_id，由中间件在请求进入时设置，供响应体与日志读取。
+request_id_ctx: ContextVar[str] = ContextVar("request_id", default="")
+
+
+def get_request_id() -> str:
+    return request_id_ctx.get()
+```
+
+> **`app/schemas/response.py`**
+
+```python
+from typing import Any, Generic, TypeVar
+
+from pydantic import BaseModel, Field
+
+from app.core.context import get_request_id
+from app.core.exceptions.codes import E
+
+T = TypeVar("T")
+
+
+class BaseResponse(BaseModel, Generic[T]):
+    """
+    统一响应结构；成功与失败共用。
+
+    客户端只根据 code 判断：code == 0 表示成功，其余为约定的错误码。
+    """
+
+    code: int = E.SUCCESS.code
+    msg: str = E.SUCCESS.msg
+    data: T | None = None
+    request_id: str = Field(default_factory=get_request_id)
+
+
+# 错误响应的 data 只承载结构化补充信息（如参数校验明细）。
+ErrorModel = BaseResponse[dict[str, Any]]
+```
+
+- `request_id` 存放在 `ContextVar` 中，每个请求（协程）互不干扰；成功响应通过 `default_factory` 自动带上，无需在路由中手动传递。
+- 成功与失败共用 `BaseResponse`，客户端只需处理一种结构；`ErrorModel` 用于 OpenAPI 文档中声明错误响应。
+
+## 创建自定义异常处理器
 
 > **`app/core/exceptions/handlers.py`**
 
 ```python
-import logging
+"""
+异常 → 统一响应的转换。
+
+分工：
+- BizException / RequestValidationError / HTTPException：由这里注册的处理器转换，
+  它们运行在 Starlette 的 ExceptionMiddleware 中（位于 CORS 与请求上下文中间件内侧）。
+- 未预期异常：不注册 Exception 处理器，而由 RequestContextMiddleware（app/middlewares/request_context.py）兜底调用
+  `unexpected_error_response`。原因是 Starlette 会把 Exception 处理器挂在最外层、
+  CORS 之外，导致 500 响应缺少 CORS 头，并且处理后仍会重新抛出、产生重复日志。
+"""
+
+from collections.abc import Mapping
+from http import HTTPStatus
+from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from loguru import logger
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.core.context import request_id_ctx
 from app.core.exceptions.codes import E
-from app.core.exceptions.errors import BizException, ErrorModel
+from app.core.exceptions.errors import BizException
+from app.schemas.response import ErrorModel
 
-
-logger = logging.getLogger("api.errors")
-
-# HTTP 映射放在 API 层；新增业务异常时一并补齐，不在调用处临时选择状态。
-BIZ_HTTP_STATUS = {
-    E.USER_NOT_FOUND: status.HTTP_404_NOT_FOUND,
-    E.USER_ALREADY_EXISTS: status.HTTP_409_CONFLICT,
-    E.PAY_ORDER_NOT_FOUND: status.HTTP_404_NOT_FOUND,
-    E.PAY_ORDER_NOT_CANCELLABLE: status.HTTP_409_CONFLICT,
-}
-
+# 框架抛出的 HTTP 异常保留原 HTTP 状态，只补齐错误码。
+# 应用代码不要直接 raise HTTPException，业务失败统一使用 BizException。
 HTTP_ERROR_CODES = {
     400: E.BAD_REQUEST,
     401: E.UNAUTHORIZED,
     403: E.FORBIDDEN,
-    404: E.NOT_FOUND,
+    404: E.ROUTE_NOT_FOUND,
+    405: E.METHOD_NOT_ALLOWED,
     409: E.CONFLICT,
     422: E.VALIDATION_ERROR,
     429: E.TOO_MANY_REQUESTS,
 }
+
+
+def ensure_request_id(request: Request) -> str:
+    request_id = getattr(request.state, "request_id", None) or uuid4().hex
+    request.state.request_id = request_id
+    request_id_ctx.set(request_id)
+    return request_id
+
+
+def route_of(request: Request) -> str:
+    """
+    返回完整的路由模板（如 /api/v1/users/{user_id}），用于日志。
+
+    使用模板而非真实路径，避免把路径参数、查询串、请求体或认证头写入日志。
+    FastAPI 嵌套路由时 scope["route"] 只含最内层模板，这里用真实路径补齐前缀。
+    """
+    route = request.scope.get("route")
+    template = getattr(route, "path_format", None)
+    if template is None:
+        return "<unmatched>"
+    path = request.scope.get("path", "")
+    try:
+        rendered = template.format(**request.scope.get("path_params", {}))
+    except (KeyError, IndexError, ValueError):
+        return template
+    if not path.endswith(rendered):
+        return template
+    prefix = path[: len(path) - len(rendered)] if rendered else path
+    return prefix + template
 
 
 def error_response(
@@ -1564,55 +1688,70 @@ def error_response(
     status_code: int,
     error: E,
     msg: str | None = None,
-    data: dict | None = None,
-    headers: dict[str, str] | None = None,
+    data: dict[str, Any] | None = None,
+    headers: Mapping[str, str] | None = None,
 ) -> JSONResponse:
-    request_id = getattr(request.state, "request_id", None) or uuid4().hex
-    request.state.request_id = request_id
     body = ErrorModel(
         code=error.code,
         msg=error.msg if msg is None else msg,
         data=data,
-        request_id=request_id,
+        request_id=ensure_request_id(request),
     )
-    response = JSONResponse(
-        status_code=status_code,
-        content=jsonable_encoder(body),
-        headers=headers,
-    )
-    # 500 处理发生在普通用户中间件外层，因此这里也直接设置响应头。
-    response.headers["X-Request-ID"] = request_id
-    return response
+    # X-Request-ID 响应头由 RequestContextMiddleware 统一添加。
+    return JSONResponse(status_code=status_code, content=jsonable_encoder(body), headers=headers)
 
 
-def log_server_error(request: Request, exc: Exception):
-    # 使用路由模板，不把原始查询串、请求体或认证头直接写入日志。
-    route = getattr(request.scope.get("route"), "path", "<unmatched>")
-    logger.error(
-        "Server error request_id=%s method=%s route=%s",
-        request.state.request_id,
+def log_server_error(request: Request, exc: BaseException):
+    # request_id 由日志格式自动带上（见 app/core/logger.py）。
+    logger.opt(exception=exc).error(
+        "Server error method={} route={}",
         request.method,
-        route,
-        exc_info=(type(exc), exc, exc.__traceback__),
+        route_of(request),
     )
+
+
+def unexpected_error_response(request: Request, exc: Exception) -> JSONResponse:
+    """未预期异常：记录完整堆栈，对外只返回通用提示。"""
+    log_server_error(request, exc)
+    return error_response(request, status_code=E.INTERNAL_ERROR.http_status, error=E.INTERNAL_ERROR)
+
+
+def _public_detail(exc: StarletteHTTPException) -> str | None:
+    """只有应用显式指定的 4xx detail 才对外返回；框架默认的英文短语使用错误码自带的提示。"""
+    if exc.status_code >= 500 or not isinstance(exc.detail, str):
+        return None
+    try:
+        default_phrase = HTTPStatus(exc.status_code).phrase
+    except ValueError:
+        default_phrase = None
+    return None if exc.detail == default_phrase else exc.detail
 
 
 def register_exception_handlers(app: FastAPI):
+    # 业务异常：HTTP 状态由错误码决定，普通业务失败为 200，客户端按 code 处理。
     @app.exception_handler(BizException)
     async def handle_biz_error(request: Request, exc: BizException):
-        status_code = BIZ_HTTP_STATUS.get(exc.error_code)
-        if status_code is None:
-            # 漏配映射属于服务端配置缺陷，不悄悄回退成 HTTP 400。
-            return await handle_unexpected_error(request, exc)
-        return error_response(
-            request, status_code=status_code, error=exc.error_code, data=exc.data
-        )
+        error = exc.error_code
+        if error.http_status >= 500:
+            # 外部依赖故障等，带原始异常链（raise ... from exc）记录堆栈。
+            log_server_error(request, exc)
+        else:
+            # 业务失败返回 200，网关与访问日志看不到，这里单独留痕。
+            logger.info(
+                "Biz error method={} route={} code={} name={}",
+                request.method,
+                route_of(request),
+                error.code,
+                error.name,
+            )
+        return error_response(request, status_code=error.http_status, error=error, data=exc.data)
 
+    # 请求参数校验失败，返回出错字段和原因。
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(request: Request, exc: RequestValidationError):
         return error_response(
             request,
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=E.VALIDATION_ERROR.http_status,
             error=E.VALIDATION_ERROR,
             data={
                 "errors": [
@@ -1626,47 +1765,31 @@ def register_exception_handlers(app: FastAPI):
             },
         )
 
+    # 框架层 HTTP 异常（路由不存在、方法不允许等），保留原有状态码和响应头。
     @app.exception_handler(StarletteHTTPException)
     async def handle_http_error(request: Request, exc: StarletteHTTPException):
-        is_server_error = exc.status_code >= 500
-        error = (
-            E.INTERNAL_ERROR if is_server_error
-            else HTTP_ERROR_CODES.get(exc.status_code, E.HTTP_ERROR)
-        )
-        response = error_response(
+        if exc.status_code >= 500:
+            log_server_error(request, exc)
+            error = E.INTERNAL_ERROR
+        else:
+            error = HTTP_ERROR_CODES.get(exc.status_code, E.HTTP_ERROR)
+        return error_response(
             request,
             status_code=exc.status_code,
             error=error,
-            # 4xx detail 必须由应用保证可公开；5xx 不返回内部 detail。
-            msg=exc.detail if not is_server_error and isinstance(exc.detail, str) else None,
+            msg=_public_detail(exc),
             headers=exc.headers,
         )
-        if is_server_error:
-            log_server_error(request, exc)
-        return response
-
-    @app.exception_handler(Exception)
-    async def handle_unexpected_error(request: Request, exc: Exception):
-        response = error_response(
-            request,
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            error=E.INTERNAL_ERROR,
-        )
-        log_server_error(request, exc)
-        return response
 ```
 
 **处理器的职责边界**
 
-- 业务失败和请求校验失败通常不打印堆栈；按需要记录业务事件、计数和少量上下文。未知故障才作为系统错误处理，不通过 `str(exc)` 向客户端暴露细节。
+- 普通业务失败返回 HTTP 200，网关与访问日志无法区分，因此处理器单独记录一条 `INFO` 日志（含路由模板、业务码），便于统计业务拒绝；5xx 的业务异常（如上游故障）才记录完整堆栈。
 - 注册 Starlette 的 `HTTPException`，可以同时覆盖 FastAPI 主动抛出的 HTTP 异常和框架生成的 404、405；保留 `exc.headers`，避免丢失 `WWW-Authenticate`、`Allow`、`Retry-After` 等头。
-- `HTTPException` 应在路由或依赖等异常处理覆盖范围内抛出。中间件若需提前拒绝请求，应直接返回相应响应，不要假定路由异常处理器会捕获中间件抛出的 `HTTPException`。
+- `_public_detail` 只对外返回应用显式指定的 4xx `detail`；框架默认的英文短语（如 `Not Found`）替换为错误码自带的中文提示，5xx 一律不返回内部 detail。
 - 校验响应只提取 `loc`、`msg`、`type`，不直接返回 `exc.body`、`input`、`ctx`；自定义校验器的提示也不要拼入敏感数据。
-- `HTTPException` 用于表达 4xx、5xx 等 HTTP 错误；不要拿它生成成功响应。
-- 本例把非字符串 HTTP `detail` 替换为公共提示；需要结构化错误时，使用约定的业务异常或显式设计对应处理器。
-- 500 兜底仅适用于仍能生成 HTTP 响应的阶段。后台任务、流式响应开始发送后发生的异常，无法改写已经发送的状态码和响应体；需要单独记录和处理失败。
-- 堆栈中的异常消息本身也可能带有 SQL 参数或业务数据，日志采集链路应配置脱敏和访问控制；不主动记录请求体，并不代表堆栈天然没有敏感信息。
-- Starlette 在执行 500 处理器后仍会将原异常向外抛出，Uvicorn 或错误采集系统可能再次记录。实际部署应确定一个完整堆栈的主要采集入口并配置去重；不要为减少日志而在普通中间件中吞掉异常。
+- 日志中使用路由模板（`route_of`），不记录真实路径、查询串、请求体或认证头。堆栈中的异常消息本身也可能带有 SQL 参数或业务数据，日志采集链路应配置脱敏和访问控制。
+- **不注册 `Exception` 处理器**：Starlette 会把它挂在 `ServerErrorMiddleware`（最外层、CORS 之外），导致 500 响应缺少 CORS 头，并且处理后仍会重新抛出原异常、产生重复日志。未预期异常改由下文的 `RequestContextMiddleware` 兜底。
 
 > 数据库事务应在服务或事务依赖的边界管理：需要原子性的操作在提交成功后才报告成功，异常时回滚并释放资源。异常处理器不负责提交或回滚，也不要把所有数据库异常都转换成“业务失败”。只转换能够明确识别的情况，例如已知唯一约束冲突；其他错误继续抛出。
 
@@ -1677,26 +1800,48 @@ def register_exception_handlers(app: FastAPI):
 ```python
 from enum import Enum, unique
 
+from fastapi import status
+
 
 @unique
 class E(Enum):
-    """稳定的业务码与公开提示；HTTP 状态另在 API 层映射。"""
-
     """
-    自定义错误码
-    格式: <业务>_<错误类型> = (code, msg)
+    稳定的业务码、公开提示与 HTTP 状态。
+
+    格式: <业务>_<错误类型> = (code, msg[, http_status])
+
+    约定：
+    - 普通业务失败一律返回 HTTP 200，客户端只根据 code 判断处理；
+    - 只有网关、监控、重试等基础设施需要感知的错误才指定真实 HTTP 状态；
+    - code 一经发布不再修改含义，废弃的 code 不复用。
+
+    号段：
+    - 0        成功
+    - 1xxxx    公共错误
+    - 2xxxx    用户业务
+    - 3xxxx    订单业务
+    - 4xxxx    外部依赖（LLM 等）
     """
 
-    # 公共错误
+    # 成功
+    SUCCESS = (0, "success")
+
+    # 公共错误（协议级，HTTP 状态有基础设施语义）
+    UNAUTHORIZED = (10401, "认证失败", status.HTTP_401_UNAUTHORIZED)
+    FORBIDDEN = (10403, "无权访问", status.HTTP_403_FORBIDDEN)
+    VALIDATION_ERROR = (10400, "参数验证失败", status.HTTP_422_UNPROCESSABLE_CONTENT)
+    TOO_MANY_REQUESTS = (10429, "请求过于频繁", status.HTTP_429_TOO_MANY_REQUESTS)
+    INTERNAL_ERROR = (10500, "服务暂时无法完成请求", status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # 公共错误（框架层，请求本身无法被路由）
+    ROUTE_NOT_FOUND = (10004, "接口不存在", status.HTTP_404_NOT_FOUND)
+    METHOD_NOT_ALLOWED = (10005, "请求方法不允许", status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    # 公共错误（普通失败，HTTP 200）
     HTTP_ERROR = (10000, "请求失败")
     BAD_REQUEST = (10001, "请求不合法")
-    UNAUTHORIZED = (10401, "认证失败")
-    FORBIDDEN = (10403, "无权访问")
     NOT_FOUND = (10404, "资源不存在")
     CONFLICT = (10409, "资源状态冲突")
-    VALIDATION_ERROR = (10400, "参数验证失败")
-    TOO_MANY_REQUESTS = (10429, "请求过于频繁")
-    INTERNAL_ERROR = (10500, "服务暂时无法完成请求")
 
     # 用户业务
     USER_NOT_FOUND = (20000, "用户不存在")
@@ -1706,65 +1851,216 @@ class E(Enum):
     PAY_ORDER_NOT_FOUND = (30000, "订单不存在")
     PAY_ORDER_NOT_CANCELLABLE = (30001, "当前订单状态不允许取消")
 
-    @property
-    def code(self) -> int:
-        """获取错误码"""
-        return self.value[0]
+    # 外部依赖：LLM（上游故障返回 5xx，便于监控告警与客户端退避重试）
+    LLM_ERROR = (40000, "模型服务调用失败", status.HTTP_502_BAD_GATEWAY)
+    LLM_TIMEOUT = (40001, "模型服务响应超时", status.HTTP_504_GATEWAY_TIMEOUT)
+    LLM_UNAVAILABLE = (40002, "模型服务暂时不可用", status.HTTP_503_SERVICE_UNAVAILABLE)
+    LLM_RATE_LIMITED = (40003, "模型服务繁忙，请稍后重试", status.HTTP_503_SERVICE_UNAVAILABLE)
 
-    @property
-    def msg(self) -> str:
-        """获取错误码码信息"""
-        return self.value[1]
+    def __init__(self, code: int, msg: str, http_status: int = status.HTTP_200_OK):
+        self.code = code
+        self.msg = msg
+        self.http_status = http_status
 ```
 
+- 枚举值是元组时，`Enum` 会把元组拆开传给 `__init__`，因此可以直接通过 `E.USER_NOT_FOUND.code`、`.msg`、`.http_status` 访问；省略第三项时默认 HTTP 200。
+- HTTP 状态和错误码放在一起定义，新增错误码时一并决定，不在调用处临时选择状态，也不需要另维护一张映射表。
 - 业务码是项目约定，不要求和 HTTP 状态数字对应，例如 `10400` 在本例中对应 HTTP 422。已发布的业务码不要改变含义或分配给其他错误。
 - 每个失败原因有稳定、明确的码；“用户已存在”和“数据库连接失败”不能都归为“用户注册失败”。登录时对外使用统一的认证失败提示，避免区分账号不存在与密码错误。
-- 新增业务码时同步补充 `BIZ_HTTP_STATUS`、接口声明和测试。本例未映射的业务码会返回 500，便于发现遗漏；应在测试中提前检查覆盖情况。
-- `@unique` 能发现完全相同的枚举值，但不能阻止 `(20000, "提示 A")` 与 `(20000, "提示 B")` 共用数字；还需检查 `len({e.code for e in E}) == len(E)`。
+- `@unique` 检查的是整个枚举值（元组），不能阻止 `(20000, "提示 A")` 与 `(20000, "提示 B")` 共用数字；还需在测试中检查 `len({e.code for e in E}) == len(E)`。
 - 本例将码表集中展示。项目较大时按业务模块拆分，但公共格式和码的分配规则保持一致；历史码的退役和兼容按接口版本管理。
+
+## 兜底未预期异常
+
+> **`app/middlewares/request_context.py`**
+
+```python
+from uuid import uuid4
+
+from starlette.datastructures import MutableHeaders
+from starlette.requests import Request
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from app.core.context import request_id_ctx
+from app.core.exceptions.handlers import log_server_error, unexpected_error_response
+
+
+class RequestContextMiddleware:
+    """
+    请求上下文与未预期异常兜底（纯 ASGI 中间件）。
+
+    - 为每个请求生成 request_id，写入 request.state 与 contextvar，并添加 X-Request-ID 响应头；
+    - 捕获下游未处理的异常，返回统一的 500 响应。
+
+    注册时须位于 CORSMiddleware 内侧（先 add 本中间件、再 add CORS），
+    这样 500 响应也会经过 CORS 处理；异常在此被消化，不再冒泡到服务器产生重复日志。
+    使用纯 ASGI 而非 @app.middleware("http")，可避免 BaseHTTPMiddleware 对流式响应的已知限制。
+    """
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # 服务端生成，避免直接信任客户端传入的任意请求标识。
+        request_id = uuid4().hex
+        scope.setdefault("state", {})["request_id"] = request_id
+        token = request_id_ctx.set(request_id)
+        response_started = False
+
+        async def send_with_request_id(message: Message):
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+                MutableHeaders(scope=message)["X-Request-ID"] = request_id
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_with_request_id)
+        except Exception as exc:
+            request = Request(scope)
+            if response_started:
+                # 响应已开始发送（如流式输出中途出错），无法再改写状态码：
+                # 记录日志后直接返回，由服务器关闭这个未完成的响应。
+                # 流式接口应在生成器内部捕获异常，发送约定的错误事件，而不是依赖这里。
+                log_server_error(request, exc)
+                return
+            response = unexpected_error_response(request, exc)
+            await response(scope, receive, send_with_request_id)
+        finally:
+            request_id_ctx.reset(token)
+```
+
+> **`app/core/logger.py`**
+
+```python
+import sys
+
+from loguru import logger
+
+from app.core.context import request_id_ctx
+
+
+def _inject_request_id(record):
+    # 每条日志自动带上当前请求的 request_id；请求之外（启动、后台任务）显示为 "-"。
+    record["extra"].setdefault("request_id", request_id_ctx.get() or "-")
+
+
+def configure_logging():
+    logger.remove()
+    logger.configure(patcher=_inject_request_id)
+    logger.add(
+        sys.stdout,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | {level: <7} | {extra[request_id]} | {message}",
+        level="INFO",
+    )
+```
+
+- 中间件同时负责两件事：生成 `request_id`（写入 `request.state`、`ContextVar` 和 `X-Request-ID` 响应头），以及兜底未预期异常。错误体、响应头与日志中的 `request_id` 一致，用于关联排查。
+- 500 兜底仅适用于响应尚未开始发送的阶段。流式响应开始发送后发生的异常，无法改写已经发送的状态码和响应体，只能记录日志；后台任务的失败也需要单独记录和处理。
+- 异常在此被消化，不再冒泡到 Uvicorn，避免同一堆栈被记录两次；对接错误采集系统（如 Sentry）时，在 `log_server_error` 中统一上报即可。
 
 ## 挂载注册异常
 
 > **`app/main.py`**；以下文件与前面的异常模块、后面的路由示例组成同一个应用。
 
 ```python
-from uuid import uuid4
+"""
+应用入口。
 
-from fastapi import FastAPI, Request
+启动方式（在项目根目录执行）：
+    开发：uv run fastapi dev
+    生产：uv run fastapi run
+"""
 
-from app.api.v1.users import router as users_router
-from app.core.exceptions.errors import ErrorModel
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api.v1 import router as api_router
 from app.core.exceptions.handlers import register_exception_handlers
+from app.core.logger import configure_logging
+from app.middlewares.request_context import RequestContextMiddleware
+from app.schemas.response import ErrorModel
+
+# 配置日志
+configure_logging()
+
+BANNER = r"""
+    ███████╗ █████╗ ███████╗████████╗ █████╗ ██████╗ ██╗
+    ██╔════╝██╔══██╗██╔════╝╚══██╔══╝██╔══██╗██╔══██╗██║
+    █████╗  ███████║███████╗   ██║   ███████║██████╔╝██║
+    ██╔══╝  ██╔══██║╚════██║   ██║   ██╔══██║██╔═══╝ ██║
+    ██║     ██║  ██║███████║   ██║   ██║  ██║██║     ██║
+    ╚═╝     ╚═╝  ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝     ╚═╝
+"""
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动阶段：开发模式下每次热重载都会重新执行。
+    print(BANNER)
+    yield
+    # 关闭阶段：在此释放资源（如 LLM 客户端、数据库连接）。
 
 
 app = FastAPI(
     debug=False,
+    title="Agent Platform",
+    summary="学习 Agent 开发的 FastAPI 示例项目",
+    description="用于学习 Agent 开发的 FastAPI 示例项目，从 LLM API 调用开始，逐步演进到完整的智能体应用。",
+    version="0.1.0",
+    lifespan=lifespan,
+    # 应用级公共响应：合并进每个接口的 OpenAPI 文档，只影响文档，不影响运行时行为。
     responses={
         422: {"model": ErrorModel, "description": "请求参数校验失败"},
         500: {"model": ErrorModel, "description": "服务端错误"},
     },
 )
+
+
+# 注册异常处理器
 register_exception_handlers(app)
 
-
-@app.middleware("http")
-async def attach_request_id(request: Request, call_next):
-    # 服务端生成，避免直接信任客户端传入的任意请求标识。
-    request.state.request_id = uuid4().hex
-    response = await call_next(request)
-    response.headers["X-Request-ID"] = request.state.request_id
-    return response
-
-
-app.include_router(users_router)
+# 注册中间件：后添加的位于外层。请求经过的顺序为
+#   CORSMiddleware → RequestContextMiddleware → 异常处理器 → 路由
+# RequestContextMiddleware 必须在 CORS 内侧，500 兜底响应才会带上 CORS 头。
+app.add_middleware(RequestContextMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,  # 允许携带Cookie
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["X-Request-ID"],  # 允许浏览器端 JS 读取，便于用户反馈问题时附上
+)
+app.include_router(api_router, prefix="/api/v1")
 ```
 
-- 生产环境关闭 `debug`，否则未处理错误可能返回调试堆栈；日志 handler、格式、输出目的地和告警在应用启动或部署配置中统一设置。
-- 错误体与响应头携带相同 `request_id`，用于关联日志；成功响应只增加该响应头，不强制修改已有响应体。已有链路追踪时可按团队规范关联 trace ID，不必另建一套无关联标识。
-- 浏览器跨域读取 `X-Request-ID` 时，需要把它加入 CORS 的 `expose_headers`。需要 500 响应也携带 CORS 头时，按 Starlette 的全局 CORS 包裹方式配置，避免最外层错误响应绕过普通 CORS 中间件。
-- 注册异常处理器不会自动修改 OpenAPI 错误模型。这里声明公共的 422、500，各路由再声明实际会返回的业务状态；这只是文档声明，不会自动实现异常处理。
+- 生产环境关闭 `debug`，否则未处理错误可能返回调试堆栈；日志在应用启动时通过 `configure_logging()` 统一配置。
+- **中间件顺序很关键**：`add_middleware` 后添加的位于外层。先添加 `RequestContextMiddleware`、再添加 `CORSMiddleware`，500 兜底响应才会经过 CORS 处理，浏览器端才能读到错误体。
+- 浏览器跨域读取 `X-Request-ID` 时，需要把它加入 CORS 的 `expose_headers`。
+- 注册异常处理器不会自动修改 OpenAPI 错误模型。这里声明公共的 422、500，仅影响文档，不会自动实现异常处理；由于业务失败返回 HTTP 200，业务错误码可写在各路由的 docstring 中。
 
 ## 路由中使用
+
+> **`app/api/v1/__init__.py`**
+
+```python
+from fastapi import APIRouter
+
+from app.api.v1.agent import router as agent_router
+from app.api.v1.users import router as users_router
+
+router = APIRouter()
+
+router.include_router(agent_router, prefix="/agent", tags=["智能体"])
+router.include_router(users_router, prefix="/users", tags=["用户相关"])
+```
 
 > **`app/api/v1/users.py`**
 
@@ -1773,33 +2069,50 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from app.core.exceptions.codes import E
-from app.core.exceptions.errors import BizException, ErrorModel
+from app.core.exceptions.errors import BizException
+from app.schemas.response import BaseResponse
 
-
-router = APIRouter(prefix="/users", tags=["用户"])
+router = APIRouter()
 
 
 class UserCreate(BaseModel):
     username: str = Field(min_length=1, max_length=50)
 
 
-@router.get("/{user_id}", responses={404: {"model": ErrorModel}})
+class UserOut(BaseModel):
+    id: int
+    username: str
+
+
+@router.get("/{user_id}")
 def read_user(user_id: int):
+    """
+    查询用户。
+
+    业务错误码（HTTP 200）：
+    - 20000 用户不存在
+    """
     # 固定数据仅演示异常；实际查询与业务校验应放到服务层。
-    if user_id != 1:
+    if user_id == 1:
         raise BizException(E.USER_NOT_FOUND)
-    return {"id": 1, "username": "alice"}
+    return BaseResponse(data=UserOut(id=1, username="alice"))
 
 
-@router.post("", status_code=201, responses={409: {"model": ErrorModel}})
+@router.post("")
 def create_user(data: UserCreate):
+    """
+    创建用户。
+
+    业务错误码（HTTP 200）：
+    - 20001 用户已存在
+    """
     if data.username == "alice":
         raise BizException(E.USER_ALREADY_EXISTS)
     # 仅演示成功响应，不实际写入数据库。
-    return {"id": 2, "username": data.username}
+    return BaseResponse(data=UserOut(id=2, username=data.username))
 ```
 
-访问 `GET /users/2` 返回 HTTP 404，示例响应如下；`X-Request-ID` 与响应体中的标识一致。
+访问 `GET /api/v1/users/1` 返回 HTTP 200，示例响应如下；`X-Request-ID` 与响应体中的标识一致。
 
 ```json
 {
@@ -1810,7 +2123,18 @@ def create_user(data: UserCreate):
 }
 ```
 
-认证等 HTTP 入口问题可以继续使用 `HTTPException`；在本章 Bearer 认证场景中，认证失败这样抛出即可由公共处理器转换格式，并保留认证头：
+成功响应同样使用 `BaseResponse`，`code` 为 `0`：
+
+```json
+{
+  "code": 0,
+  "msg": "success",
+  "data": {"id": 1, "username": "alice"},
+  "request_id": "9b1f0c7e2d4a4f1c8e6a3b5d7f9e1a2c"
+}
+```
+
+认证等 HTTP 入口问题可以继续使用 `HTTPException`；在本章 Bearer 认证场景中，认证失败这样抛出即可由公共处理器转换格式（业务码 `10401`），并保留认证头：
 
 ```python
 from fastapi import HTTPException
@@ -1822,29 +2146,118 @@ raise HTTPException(
 )
 ```
 
+## 外部依赖异常转换
+
+调用 LLM 等外部服务时，在集成层把第三方 SDK 的异常转换为项目自己的错误码，业务层和 API 层只面对 `BizException`。
+
+> **`app/integrations/openai_client.py`**
+
+```python
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+import openai
+from openai import AsyncOpenAI
+
+from app.core.config import settings
+from app.core.exceptions.codes import E
+from app.core.exceptions.errors import BizException
+
+client = AsyncOpenAI(
+    api_key=settings.openai_api_key,
+    base_url=settings.openai_base_url,
+    timeout=settings.openai_timeout,
+    max_retries=settings.openai_max_retries,
+)
+
+
+@contextmanager
+def translate_openai_errors() -> Iterator[None]:
+    """
+    把 OpenAI SDK 异常转换为带错误码的 BizException。
+
+    外部依赖的异常在集成层转换，业务层和 API 层只面对项目自己的错误码；
+    使用 `raise ... from exc` 保留原始异常，日志里能看到上游的真实原因。
+
+    用法:
+        with translate_openai_errors():
+            response = await client.chat.completions.create(...)
+    """
+    try:
+        yield
+    # APITimeoutError 是 APIConnectionError 的子类，必须先捕获。
+    except openai.APITimeoutError as exc:
+        raise BizException(E.LLM_TIMEOUT) from exc
+    except openai.APIConnectionError as exc:
+        raise BizException(E.LLM_UNAVAILABLE) from exc
+    except openai.RateLimitError as exc:
+        raise BizException(E.LLM_RATE_LIMITED) from exc
+    except openai.InternalServerError as exc:
+        # 上游返回 5xx
+        raise BizException(E.LLM_UNAVAILABLE) from exc
+    except openai.APIError as exc:
+        # 其余情况：鉴权失败、模型不存在、请求参数错误、响应无法解析等，多为配置或调用问题。
+        raise BizException(E.LLM_ERROR) from exc
+```
+
+> **`app/services/agent.py`**
+
+```python
+from app.core.config import settings
+from app.core.exceptions.codes import E
+from app.core.exceptions.errors import BizException
+from app.integrations.openai_client import client, translate_openai_errors
+
+
+class AgentService:
+    @staticmethod
+    async def chat(prompt: str) -> str:
+        with translate_openai_errors():
+            response = await client.chat.completions.create(
+                model=settings.openai_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "你是一个专业的AI助手。",
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    },
+                ],
+                temperature=0.7,
+            )
+
+        # 上游返回了 200 但没有候选结果，同样视为上游异常。
+        if not response.choices:
+            raise BizException(E.LLM_ERROR)
+
+        return response.choices[0].message.content or ""
+```
+
+- 上游故障对应的错误码自带 5xx 状态，处理器会记录完整堆栈（含 `from exc` 保留的原始异常），对外只返回错误码自带的提示，不暴露第三方原始报错。
+- 只转换能够明确识别的异常；`settings` 等配置的读取方式见后文【环境变量】。
+
 **处理范围与验收速查**
 
 | 检查场景 | 预期结果 |
 | --- | --- |
-| `GET /users/1` | HTTP 200，正常数据 |
-| `GET /users/2` | HTTP 404，业务码 `20000` |
-| `POST /users`，提交 `{"username": "alice"}` | HTTP 409，业务码 `20001` |
-| `GET /users/not-an-int` 或提交缺少 `username` 的请求 | HTTP 422，业务码 `10400`，返回字段错误 |
-| 访问未注册路径／使用不支持的方法 | 统一错误格式，保留 404／405；405 保留 `Allow` |
+| `GET /api/v1/users/2` | HTTP 200，业务码 `0`，正常数据 |
+| `GET /api/v1/users/1` | HTTP 200，业务码 `20000` |
+| `POST /api/v1/users`，提交 `{"username": "alice"}` | HTTP 200，业务码 `20001` |
+| `GET /api/v1/users/not-an-int` 或提交缺少 `username` 的请求 | HTTP 422，业务码 `10400`，返回字段错误 |
+| 访问未注册路径／使用不支持的方法 | HTTP 404／405，业务码 `10004`／`10005`；405 保留 `Allow` |
 | Bearer 认证失败 | HTTP 401，业务码 `10401`，保留 `WWW-Authenticate` |
-| 未处理异常／响应模型校验失败 | HTTP 500，业务码 `10500`；客户端看不到内部错误，日志有堆栈和请求标识 |
+| LLM 超时／不可用／限流 | HTTP 504／503，业务码 `40001`／`40002`／`40003`，日志有原始异常 |
+| 未处理异常／响应模型校验失败 | HTTP 500，业务码 `10500`；客户端看不到内部错误，响应带 CORS 头，日志有堆栈和请求标识 |
 
-监控分别统计业务拒绝与系统故障，并关联接口、状态和请求标识；业务失败率升高不等同于程序故障，系统故障也不能仅靠业务码报表发现。
+监控分别统计业务拒绝与系统故障：业务失败为 HTTP 200，需依赖处理器记录的 `Biz error` 日志按业务码统计；系统故障依赖 5xx 状态和堆栈日志告警。业务失败率升高不等同于程序故障，系统故障也不能仅靠业务码报表发现。
 
-自动化测试还应校验业务码数字唯一、业务映射完整、OpenAPI 中的 422 模型与实际一致，以及必要的事务回滚和敏感信息保护。测试 500 响应时使用 `TestClient(app, raise_server_exceptions=False)`；默认客户端会重新抛出服务端异常，不能据此判断 500 处理器没有执行。
-
-**已有“全部 HTTP 200”协议如何兼容**
-
-已有客户端依赖 `code` 时，不直接切换旧接口状态。将兼容逻辑限定在明确的旧版本入口，仅对约定的业务拒绝保留原协议，并独立统计业务失败率；新版本使用本节约定。认证、参数校验等旧行为的变更要和客户端一起迁移，系统故障不要继续扩展成 HTTP 200。
+自动化测试还应校验业务码数字唯一、OpenAPI 中的 422 模型与实际一致，以及必要的事务回滚和敏感信息保护。测试 500 响应时使用 `TestClient(app, raise_server_exceptions=False)`；默认客户端会重新抛出服务端异常，不能据此判断兜底逻辑没有执行。
 
 > 本方案统一的是应用能够生成的 HTTP 错误响应；代理层生成的错误、网络故障以及已开始发送响应后的失败，需要客户端和基础设施分别处理。
 >
-> 参考：[FastAPI 错误处理 ↪](https://fastapi.tiangolo.com/zh/tutorial/handling-errors/)、[额外响应与 OpenAPI ↪](https://fastapi.tiangolo.com/zh/advanced/additional-responses/)、[Starlette 异常处理 ↪](https://starlette.dev/exceptions/)、[全局 CORS 配置 ↪](https://starlette.dev/middleware/#corsmiddleware)。
+> 参考：[FastAPI 错误处理 ↪](https://fastapi.tiangolo.com/zh/tutorial/handling-errors/)、[额外响应与 OpenAPI ↪](https://fastapi.tiangolo.com/zh/advanced/additional-responses/)、[Starlette 异常处理 ↪](https://starlette.dev/exceptions/)、[Starlette 纯 ASGI 中间件 ↪](https://starlette.dev/middleware/#pure-asgi-middleware)。
 
 
 # 中间件
@@ -2007,7 +2420,7 @@ from loguru import logger
 logger.info("直接使用已配置的logger")
 ```
 
-> 本例只配置 Loguru。前面异常处理使用的标准库 `logging`，以及 Uvicorn 自身的日志，不会自动获得相同格式；需要统一日志时再配置标准库日志或转接处理器。查问题时可记录请求路径、耗时和业务标识，避免输出密码、完整令牌和数据库连接串。
+> 本例为最简配置；前面【异常处理】中的 `app/core/logger.py` 在此基础上通过 `patcher` 为每条日志注入 `request_id`。Uvicorn 自身使用标准库 `logging`，不会自动获得相同格式；需要统一日志时再配置标准库日志或转接处理器。查问题时可记录请求路径、耗时和业务标识，避免输出密码、完整令牌和数据库连接串。
 
 # CORS（跨域资源共享）
 
