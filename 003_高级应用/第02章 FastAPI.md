@@ -1519,7 +1519,7 @@ class BizException(Exception):
 
 > `msg` 和 `data` 都属于对外契约，不要放入 SQL、连接串、密码、令牌或第三方服务的原始报错。
 
-## 创建自定义异常处理器
+##  创建自定义异常处理器
 
 > **`app/core/exceptions/handlers.py`**
 
@@ -1851,7 +1851,7 @@ raise HTTPException(
 
 你可以向 **FastAPI** 应用添加中间件。
 
-**中间件** 是一个函数，它在每个**请求**被特定的路径操作处理之前，以及在每个**响应**返回之前工作。
+[**中间件 ↪**](https://fastapi.tiangolo.com/zh/tutorial/middleware/) 是一个函数，它在每个**请求**被特定的路径操作处理之前，以及在每个**响应**返回之前工作。
 
 ![中间件执行流程](../imgs/middleware_model.jpg)
 
@@ -1866,8 +1866,6 @@ raise HTTPException(
 - `request`
 - 一个函数 `call_next`，它接收 `request` 作为参数，并返回路径操作生成的 `response`
 - 在返回 `response` 前，可以进一步修改响应
-
-
 
 代码示例：
 
@@ -2013,7 +2011,7 @@ logger.info("直接使用已配置的logger")
 
 # CORS（跨域资源共享）
 
-CORS（Cross-Origin Resource Sharing，跨域资源共享）用于控制浏览器中不同源的前端 JavaScript 是否可以访问后端 API。
+[CORS ↪](https://fastapi.tiangolo.com/zh/tutorial/cors/)（Cross-Origin Resource Sharing，跨域资源共享）用于控制浏览器中不同源的前端 JavaScript 是否可以访问后端 API。
 
 你可以在 **FastAPI** 应用中使用 `CORSMiddleware` 来配置它。
 
